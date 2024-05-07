@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html style="padding:0;margin:0;">
+	<body style="padding:0;margin:0;overflow: hidden;">
+		<canvas id="screen"></canvas>
+		<script>
+			canvascolor = "rgba(19, 23, 26, 1)";
+			var canvas = document.getElementById('screen');
+			var ctx = canvas.getContext('2d');
+
+			//neural network has two inputs, two layers, two nodes per layer, and two outputs.
+			//uses reLu, optimizes with softmax, outputs with argmax,
+			//DRAWING THE NET:
+			// spaced evenly, draw the layers, with circles spaced evenly
+			// nodes are connected by lines
+			// each line has math rectangle displayed: "w=1.2, b=3.4"
+			// each circle has input and output inside: "i=1.2, o=1.2"
+
+			let pause = false;
+			let timeInt = 20;
+
+			canvasResize();
+
+			document.addEventListener('keydown', (event) => {
+			  const keyName = event.key;
+				switch(keyName){
+					case 'Control':
+						return;
+					case 'Escape':
+
+						return;
+					case ' ':
+						pause = !pause;
+						return;
+					case '-':
+						timeInt *= 2;
+						return;
+					case '+':
+						timeInt /= 2;
+						return;
+				}
+			}, false);
+
+
+
+
+			class Node{
+				constructor(net,layer,id,x,y){
+					this.net = net;
+					this.layer = layer;
+					this.id = id; // id is index per layer
+
+					this.bias = 0;
+					this.preActiv = 0;
+					this.value = 0;
+
+					this.shortDerivs = [];
+					this.dOutdCurr = [];
+					this.newBias = 0;
+					this.newWeights = 0;
+
+					this.tempBias = 0;
+					this.tempWeights = [];
+
+					if(this.layer > 0){
+						let inputNodes = this.net.nodes[this.layer-1];
+						this.inputWeights = []; //set random on gauss
+						for(let i=0; i<inputNodes.length; i++){
+							this.inputWeights.push(Math.random()*4-2);
+							this.tempWeights.push(0);
+							// this.inputWeights.push(Math.sign(Math.random()-0.5));
+						}
+						this.update();
+					}
+
+					this.x = x;
+					this.y = y;
+
+					this.dCurdPrev = [];
+					this.leak = 0.02;
+				}
+
+
+				update(){
+					let inputNodes = this.net.nodes[this.layer-1];
+					let sum = 0;
+					for(let i=0; i<inputNodes.length; i++){
+						sum += inputNodes[i].value*this.inputWeights[i];
+					}
+					sum += this.bias;
+					this.preActiv = sum;
+					// this.value = (sum>0)? sum:(sum*this.leak)
+					this.value = relu(sum);
+					// if(this.layer<this.net.nodes.length-1){
+					// 	this.value = Math.max(sum, 0);
+					// }else{
+					// 	this.value = sum;
+					// }
+				}
+
+
+				draw(){
+					circle(this.x,this.y,25,"lightGray");
+					ctx.textAlign = "center";
+					ctx.font = 14 + "px Arial";
+					ctx.fillStyle = "black";
+					ctx.fillText(Math.round(this.value*100)/100, this.x, this.y+8);
+					ctx.font = 10 + "px Arial";
+					let plusorminus = "+";
+					if(this.bias < 0){
+						ctx.fillStyle = "red";
+						plusorminus = ""
+					}else if(this.bias>0){
+						ctx.fillStyle = "green";
+					}
+					ctx.fillText(plusorminus + Math.round(this.bias*100)/100, this.x, this.y-10);
+
+				}
+
+
+				drawLines(){
+					if(this.layer > 0){ // draw edges to all nodes behind
+						let inputNodes = this.net.nodes[this.layer-1];
+						for(let i=0; i<inputNodes.length; i++){
+							ctx.strokeStyle = (this.inputWeights[i] < 0) ? "red" : "green";
+							// ctx.lineWidth = Math.cbrt(Math.abs(this.inputWeights[i]));
+							ctx.lineWidth = Math.abs(this.inputWeights[i]);
+							ctx.beginPath();
+							ctx.moveTo(this.x,this.y);
+							ctx.lineTo(inputNodes[i].x, inputNodes[i].y);
+							ctx.stroke();
+						}
+					}
+				}
+
+
+				deriv(){ //sets dCurdPrev
+					// dcurrent/dprevious = drelu/dinside * d((previous*w)+b)/dprevious
+					// dcurrent/dprevious = drelu/dinside * w
+					// if the current value is 0, then drelu/dinside = 0. else, 1
+					let inputNodes = this.net.nodes[this.layer-1];
+
+					if(this.preActiv <= 0){
+						for(let i=0; i<inputNodes.length; i++){
+							this.dCurdPrev[i] = this.leak*this.inputWeights[i];
+						}
+					}else{
+						for(let i=0; i<inputNodes.length; i++){
+							this.dCurdPrev[i] = this.inputWeights[i];
+						}
+					}
+				}
+			}
+
+			class Net{
+				constructor(nodeList,x,y,w,h){ //hiddenList is a list of layers with corresponding numbers of nodes, including inputs and outputs
+					this.nodes = [];	
+					this.box = [x,y,w,h];
+				
+					for(let i=0; i<nodeList.length; i++){
+						this.nodes.push([]);
+						for(let j=0; j<nodeList[i]; j++){
+							let nodex = this.box[0] + (i+0.5)*this.box[2]/nodeList.length;
+							let nodey = this.box[1] + (j+0.5)*this.box[3]/nodeList[i];
+							this.nodes[i].push(new Node(this,i,j,nodex,nodey));
+						}
+					}
+					let last = nodeList.length-1;
+					for(let j=0; j<nodeList[last]; j++){
+						for(let k=0; k<nodeList[last]; k++){
+							this.nodes[last][j].dOutdCurr.push(0);
+						}
+						this.nodes[last][j].dOutdCurr[j] = 1; // set dOutdCurr to zeros except for the output's own index
+					}
+					//[[node0,node1,node2]
+					// [node0,node1,node2]
+					// [node0,node1,node2]]
+					
+					this.sftmx = new Array(nodeList[nodeList.length-1]);
+					this.correct = 0;
+					this.crossEntropy = 0;
+
+					this.leak = 0.02;
+					this.biasStep = 1;
+					this.weightStep = 1;
+
+					this.avgEntropy = 0;
+				}
+
+
+				input(correct,inList){
+					for(let i=0; i<inList.length; i++){ //set value of each node in layer 0
+						this.nodes[0][i].value = inList[i];
+					}
+					this.correct = correct;
+					this.update();
+				}
+
+				test(inList){ // beware that this doesn't set "correct," but it does set sftmx and crossEntropy
+					for(let i=0; i<inList.length; i++){ //set value of each node in layer 0
+						this.nodes[0][i].value = inList[i];
+					}
+					this.update();
+
+					let temp = [];
+					for(let each of this.sftmx){
+						temp.push(Math.round(each*1000)/1000)
+					}
+					console.table(temp);
+				}
+
+
+				update(){
+					for(let i=1; i<this.nodes.length; i++){ //for each layer after 0,
+						for(let j=0; j<this.nodes[i].length; j++){ //for each node, update value
+							this.nodes[i][j].update();
+						}
+					}
+					this.softmax();
+					this.crossEntropy = -Math.log(this.sftmx[this.correct]);
+				}
+
+
+				draw(){ // draw in a rectangular box
+					ctx.lineWidth = 1;
+					ctx.strokeStyle = "gray";
+					ctx.fillStyle = "black";
+					ctx.fillRect(...this.box)
+					ctx.strokeRect(...this.box)
+
+					for(let i=0; i<this.nodes.length; i++){ // for each layer,
+						for(let j=0; j<this.nodes[i].length; j++){ // for each node
+							this.nodes[i][j].drawLines();
+						}
+					}
+					for(let i=0; i<this.nodes.length; i++){ // for each layer,
+						for(let j=0; j<this.nodes[i].length; j++){ // for each node
+							this.nodes[i][j].draw();
+						}
+					}
+					
+					let outNodes = this.nodes[this.nodes.length-1]
+					ctx.font = 12 + "px Arial";
+					ctx.fillStyle = "white"
+					ctx.strokeStyle = "green";
+					for(let i = 0; i<outNodes.length; i++){
+						if(i == this.correct){
+							ctx.strokeRect(outNodes[i].x+30, outNodes[i].y-5, 10, 10);
+						}
+						ctx.fillText(Math.round(this.sftmx[i]*100)/100, outNodes[i].x+60, outNodes[i].y);
+					}
+					ctx.fillStyle = "rgba(" + (128 + 127*this.crossEntropy) + "," + (255-127*this.crossEntropy) + ",127,1)"; // cross entropy can be > 1
+					ctx.fillText("cross entropy: " + Math.round(this.crossEntropy*100)/100, this.box[0] + this.box[2]/2, this.box[1] + this.box[3] - 5);
+				}
+
+
+				softmax(){
+					let outNodes = this.nodes[this.nodes.length-1];
+					let eList = [];
+					let eSum = 0;
+					//calculate sum of e^'s
+					for(let i = 0; i<outNodes.length; i++){
+						eList.push(Math.exp(outNodes[i].value));
+						eSum += eList[i];
+					}
+					for(let i = 0; i<outNodes.length; i++){
+						this.sftmx[i] = eList[i]/eSum;
+					}
+				}
+
+
+				bp(){
+					// precalculate the shortderivs between every node and the nodes before it
+					for(let l=this.nodes.length-2; l > 0; l--){ // for each layer l besides the output and input
+						for(let n=0; n<this.nodes[l].length; n++){ // for each node n
+							// calculate dOUT/dCURR for each output
+							for(let out=0; out<this.nodes[this.nodes.length-1].length; out++){ // for each neural output l
+								for(let up = 0; up < this.nodes[l+1].length; up++){ // for each node in the greater node (close to output)
+									// dOUT/dCURR = dOUT/dUP * dUP/dCURR
+									this.nodes[l][n].dOutdCurr[out] = this.nodes[l+1][up].dOutdCurr[out] * this.shortDeriv(l+1, up, n);
+								}
+							}
+						} // END for each node j
+					} // END for each layer i > 0
+
+
+					let dSoftdOuts = [];
+					// let dCEdOuts = [];
+					// precalculate all dSoft/dOuts: precondition --> this.sftmx is already up to date
+					for(let out=0; out<this.nodes[this.nodes.length-1].length; out++){ // for each neural output l
+						if(out == this.correct){
+							dSoftdOuts.push(this.sftmx[this.correct]*(1 - this.sftmx[this.correct]));
+							// dCEdOuts.push((-1/this.sftmx[out]) * this.sftmx[this.correct]*(1 - this.sftmx[this.correct]));
+						}else{
+							dSoftdOuts.push(-this.sftmx[this.correct]*this.sftmx[out]);
+							// dCEdOuts.push((1/this.sftmx[out]) * this.sftmx[this.correct]*this.sftmx[out]);
+						}
+					}
+
+					//console.log(dSoftdOuts);
+					// backpropogate all of the weights and biases!
+					// for each OUTPUT, find dOUT/dWEIGHT as well as dOUT/dBIAS
+					for(let l=1; l<this.nodes.length; l++){ // for each layer l besides the input layer
+						for(let n=0; n<this.nodes[l].length; n++){ // for each node n
+							// calculate dSoft/dVariable = (dSoft/dOut1 * dOut1/dNode + dSoft/dOut2 * dOut2/dNode + .....) * dNode/dVariable
+							let dSoftdNode = 0;
+							let dCEdNode = 0;
+							for(let out=0; out<this.nodes[this.nodes.length-1].length; out++){ // for each neural output "out"
+								dSoftdNode += dSoftdOuts[out] * this.nodes[l][n].dOutdCurr[out];
+								// dCEdNode += dCEdOuts[out] * this.nodes[l][n].dOutdCurr[out];
+							}
+							// console.log("l" + l + " n" + n + " dCEdNode: " + dCEdNode);
+							// console.log("l" + l + " n" + n + " dSoftdNode: " + dSoftdNode);
+							// dNode/dBias = dActiv(preActiv)
+							// this.nodes[l][n].bias += this.biasStep * (dSoftdNode * drelu(this.nodes[l][n].preActiv));
+
+							// this.weightStep = 0.005;
+							// this.biasStep = 0.005;
+							this.weightStep = 0.2 * this.crossEntropy * this.crossEntropy;
+							this.biasStep = 0.2 * this.crossEntropy * this.crossEntropy;
+							
+							this.nodes[l][n].tempBias += this.biasStep * (dSoftdNode * drelu(this.nodes[l][n].preActiv));
+							// this.nodes[l][n].tempBias += this.biasStep * (dSoftdNode * 1); // use 1, the derivative of the linear identity
+							// console.log("l" + l + " n" + n + " bias: " + (dSoftdNode * 1));
+							for(let w=0; w<this.nodes[l-1].length; w++){ // for each incoming weight k
+								// dNode/dWeight = dActiv(preActiv) * value being weighted
+								this.nodes[l][n].tempWeights[w] += this.weightStep * (dSoftdNode * drelu(this.nodes[l][n].preActiv) * this.nodes[l-1][w].value);
+								// console.log("l" + l + " n" + n + " w" + w +" weight: " + (dSoftdNode * drelu(this.nodes[l][n].preActiv) * this.nodes[l-1][w].value));
+								// this.nodes[l][n].tempWeights[w] += this.weightStep * (dSoftdNode * 1 * this.nodes[l-1][w].value);
+								// console.log("l" + l + " n" + n + " w" + w +" weight: " + (dSoftdNode * 1 * this.nodes[l-1][w].value));
+							}
+							
+
+							/*
+							this.nodes[l][n].tempBias -= this.biasStep * (dCEdNode * drelu(this.nodes[l][n].preActiv));
+							console.log("l" + l + " n" + n + " bias: " + (-dCEdNode * drelu(this.nodes[l][n].preActiv)));
+							for(let w=0; w<this.nodes[l-1].length; w++){ // for each incoming weight k
+								this.nodes[l][n].tempWeights[w] -= this.weightStep * (dCEdNode * drelu(this.nodes[l][n].preActiv) * this.nodes[l-1][w].value);
+								console.log("l" + l + " n" + n + " w" + w +" weight: " + (-dCEdNode * drelu(this.nodes[l][n].preActiv) * this.nodes[l-1][w].value));
+							}*/
+
+						} // END for each node j
+					} // END for each layer i > 0
+
+					//this.update();
+				}
+
+
+				runBatch(inputs, batchStart, batchSize){ // pass inputs in by reference
+					let crossEntropies = [];
+					this.avgEntropy = 0;
+					const end = Math.min(batchStart + batchSize, inputs.length);
+					for(let i = batchStart; i < end; i++){
+						this.input(...(inputs[i])); // we need to change input style later on
+						this.avgEntropy += this.crossEntropy;
+						crossEntropies.push(this.crossEntropy);
+						this.bp();
+					}
+					this.avgEntropy /= batchSize;
+
+					for(let l=1; l<this.nodes.length; l++){ // for each layer l besides the input layer
+						for(let n=0; n<this.nodes[l].length; n++){ // for each node n
+							this.nodes[l][n].bias += this.nodes[l][n].tempBias/this.avgEntropy;
+							this.nodes[l][n].tempBias = 0;
+							for(let w=0; w<this.nodes[l-1].length; w++){ // for each incoming weight k
+								this.nodes[l][n].inputWeights[w] += this.nodes[l][n].tempWeights[w]/this.avgEntropy;
+								this.nodes[l][n].tempWeights[w] = 0;
+							}
+						}
+					}
+					// this.update();
+					// console.table(crossEntropies);
+					console.log(this.avgEntropy);
+				}
+
+
+				/*chainDeriv(NL, NI, TL, TI){ // returns dN/dT
+					// T always stays the same, but N moves backwards (layer decrease) towards it
+					if(TL >= NL){
+						console.log("TL >= NL!!!");
+						return 0;
+					}else if(TL == NL-1){
+						return this.nodes[NL][NI].shortDerivs[TI];
+					}
+					let sum = 0;
+					for(let n = 0; n < this.nodes[NL-1].length; n++){
+						sum += this.nodes[NL][NI].shortDerivs[n]*this.chainDeriv(NL-1, n, TL, TI);
+					}
+					return sum;
+				}*/
+
+				/*
+				// calculate the shortderivs between this node and the nodes before it
+				this.nodes[l][n].shortDerivs = [];
+				for(let n2=0; n2<this.nodes[l-1].length; n2++){ // for each node n2 in the previous layer
+					this.nodes[l][n].shortDerivs.push(this.shortDeriv(l, n, n2));
+				}
+				*/
+
+
+				shortDeriv(NL, NI, TI){ // returns dN/dT given that TL == NL-1
+					return drelu(this.nodes[NL][NI].preActiv)*this.nodes[NL][NI].inputWeights[TI];
+				}
+			}
+
+
+			function relu(val){
+				if(val < 0){
+					return 0.02*val;
+				}
+				return val;
+			}
+
+
+			function drelu(val){
+				if(val < 0){
+					return 0.02;
+				}
+				return 1;
+				
+			}
+
+
+			function circle(x,y,r,color,filled=true){
+
+				ctx.beginPath();
+				ctx.arc(x,y,r,0,2*Math.PI)
+				if(filled){
+					ctx.fillStyle = color;
+					ctx.fill();
+				}else{
+					ctx.strokeStyle = color;
+					ctx.stroke();
+				}
+			}
+
+
+			function fillscreen(){
+
+				ctx.fillStyle = canvascolor;
+				ctx.fillRect(0, 0, canvas.width, canvas.height);
+				if(pause){
+					ctx.font = canvas.width / 30 + "px Arial";
+					ctx.fillStyle = "rgba(255, 245, 80, 1)";
+					ctx.fillText("paused", 36*canvas.width/40, 8*canvas.height / 20);
+				}
+
+			}
+
+			// let neural = new Net([2,2,2],50,50,500,300)
+			// neural.draw(); // should show NaNs
+			// //neural.input(0,[0.6,0.25]);
+
+			// let flip = true;
+			// setInterval(function(){
+			// 	fillscreen();
+			// 	if(!pause){
+			// 		console.log("START!");
+			// 		flip = !flip;
+			// 		if(flip){
+			// 			neural.input(1,[0.1,0.9]);
+			// 			// neural.backpropogate();
+			// 		}else{
+			// 			neural.input(0,[0.9,0.1]);
+			// 			// neural.backpropogate();
+			// 		}
+			// 		neural.bp();
+			// 	}
+			// 	neural.draw();
+			// }, 200);
+
+			// let neural = new Net([1,2],50,50,500,300)
+			// neural.input(0,[0.6]);
+
+			// let flip = true;
+			// setInterval(function(){
+			// 	fillscreen();
+			// 	neural.draw();
+			// 	if(!pause){
+			// 		flip = !flip;
+			// 		if(flip){
+			// 			neural.input(1,[0.1]);
+			// 			neural.backpropogate(true);
+			// 		}else{
+			// 			neural.input(0,[0.9]);
+			// 			neural.backpropogate(true);
+			// 		}
+			// 	}
+			// }, 200);
+
+			
+			let neural = new Net([3,6,6,8],10,10,800,600)
+			neural.draw(); // should show NaNs
+			let binaryStates = [
+				[0, [0,0,0]],
+				[1, [0,0,1]],
+				[2, [0,1,0]],
+				[3, [0,1,1]],
+				[4, [1,0,0]],
+				[5, [1,0,1]],
+				[6, [1,1,0]],
+				[7, [1,1,1]]
+			]
+			
+			// let dataIndex = 0;
+			// setInterval(function(){
+			// 	fillscreen();
+			// 	if(!pause){
+			// 		dataIndex = (dataIndex+1)%8;
+			// 		neural.input(...(binaryStates[dataIndex]));
+			// 		neural.bp();
+			// 	}
+			// 	neural.draw();
+			// }, 100);
+
+			// let neural = new Net([3,2],10,10,800,600)
+			// neural.draw(); // should show NaNs
+			// let binaryStates = [
+			// 	[0, [0,0,0]],
+			// 	[0, [0,0,1]],
+			// 	[0, [0,1,0]],
+			// 	[0, [0,1,1]],
+			// 	[1, [1,0,0]],
+			// 	[1, [1,0,1]],
+			// 	[1, [1,1,0]],
+			// 	[1, [1,1,1]]
+			// ]
+			
+			let dataIndex = 0;
+			setInterval(function(){
+				fillscreen();
+				if(!pause){
+					neural.runBatch(binaryStates, dataIndex, 8);
+					// dataIndex = (dataIndex+1)%8;
+					// neural.runBatch(binaryStates, 3, 2);
+				}
+				neural.draw();
+				// pause = true; // keep this line to make spacebar into a "step" bar
+			}, 20);
+
+
+			window.onresize = canvasResize;
+			function canvasResize() {
+				canvas.width  = window.innerWidth;
+				canvas.height = window.innerHeight;
+				// ctx.fillStyle = '#13171A';
+				// ctx.fillStyle = canvascolor;
+				// ctx.fillRect(0, 0, canvas.width, canvas.height);
+				fillscreen();
+			}
+
+		</script>
+	</body>
+</html>
